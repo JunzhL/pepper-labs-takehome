@@ -1,7 +1,61 @@
-import { Link } from "react-router-dom";
-import { ArrowLeft, PackagePlus } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
+import { createProduct, fetchCategories } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/apiError";
+import type { Category } from "@/types";
+import ProductForm from "@/components/product-form/ProductForm";
+import type { CreateProductPayload } from "@/lib/validation";
 
 export default function CreateProductPage() {
+  const navigate = useNavigate();
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchCategories()
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await getApiErrorMessage(response, "Failed to load categories"));
+        }
+        return response.json();
+      })
+      .then((data: Category[]) => {
+        setCategories(data);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Failed to load categories");
+        setLoading(false);
+      });
+  }, []);
+
+  const handleSubmit = async (payload: CreateProductPayload) => {
+    const response = await createProduct(payload);
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response, "Failed to create product"));
+    }
+    const created = (await response.json()) as { id: number };
+    navigate(`/products/${created.id}`);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+        {error}
+      </div>
+    );
+  }
+  
   return (
     <div>
       <Link
@@ -16,33 +70,7 @@ export default function CreateProductPage() {
         Create New Product
       </h1>
 
-      {/* ----------------------------------------------------------------
-          TODO: Build the create-product form here.
-
-          The form should collect:
-            - Product name (required)
-            - Description (optional)
-            - Category (select from existing categories)
-            - Status (active / draft)
-            - At least one variant with:
-                - SKU (required, must be unique)
-                - Variant name (required)
-                - Price (>= 0)
-                - Inventory count (>= 0)
-
-          On submit, POST to /api/products (see backend route for expected body shape).
-          On success, redirect to the new product's detail page.
-       ---------------------------------------------------------------- */}
-
-      <div className="rounded-lg border border-dashed bg-card p-12 text-center shadow-card">
-        <PackagePlus className="mx-auto mb-4 h-12 w-12 text-muted-foreground/40" />
-        <p className="text-lg font-medium text-muted-foreground">
-          Product form not yet implemented
-        </p>
-        <p className="mt-1 text-sm text-muted-foreground/70">
-          This is one of your tasks — see the README for details.
-        </p>
-      </div>
+      <ProductForm categories={categories} onSubmit={handleSubmit} />
     </div>
   );
 }

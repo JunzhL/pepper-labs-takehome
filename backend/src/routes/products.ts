@@ -1,5 +1,7 @@
 import { Router } from "express";
 import db from "../db.js";
+import { sendError } from "../lib/http.js";
+import { validateCreateProductPayload } from "../lib/validation.js";
 
 const router = Router();
 
@@ -32,7 +34,7 @@ router.get("/", (req, res) => {
       LEFT JOIN variants v ON v.product_id = p.id
     `;
 
-    const conditions: string[] = [];
+    const conditions: string[] = ["p.deleted_at IS NULL"];
     const params: unknown[] = [];
 
     if (search) {
@@ -45,18 +47,14 @@ router.get("/", (req, res) => {
       params.push(Number(category_id));
     }
 
-    if (conditions.length > 0) {
-      query += " WHERE " + conditions.join(" AND ");
-    }
-
+    query += " WHERE " + conditions.join(" AND ");
     query += " GROUP BY p.id ORDER BY p.created_at DESC";
 
     const products = db.prepare(query).all(...params);
     res.json(products);
   } catch (err: unknown) {
-    // FIXME: sends plain text error — should this be JSON to match other responses?
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).send(message);
+    return sendError(res, 500, message);
   }
 });
 
@@ -76,7 +74,7 @@ router.get("/:id", (req, res) => {
       .get(Number(req.params.id)) as Record<string, unknown> | undefined;
 
     if (!product) {
-      return res.status(404).json({ error: "Product not found" });
+      return sendError(res, 404, "Product not found");
     }
 
     const variants = db
@@ -88,7 +86,7 @@ router.get("/:id", (req, res) => {
     res.json({ ...product, variants });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).send(message);
+    return sendError(res, 500, message);
   }
 });
 
@@ -108,15 +106,74 @@ router.get("/:id", (req, res) => {
  * }
  */
 router.post("/", (_req, res) => {
-  // TODO: Implement product creation
-  // 1. Validate required fields (name is required, variants array must have at least one entry)
-  // 2. Validate each variant (sku required + unique, price_cents >= 0, inventory_count >= 0)
-  // 3. Insert product and variants inside a transaction
-  // 4. Return the created product with its variants
-  res.status(501).json({
-    error: "Not implemented",
-    hint: "Implement product creation with validation and a database transaction",
-  });
+  /**
+   * Solution: 
+   * 1. Validate and parse the incoming request body using validateCreateProductPayload.
+   * 2. If validation fails, return a 400 Bad Request with the error message and field.
+   * 3. If validation succeeds, proceed to insert the new product and its variants into the database.
+   * 4. Return the created product with its variants in the response.
+   */
+  try {
+    const parsed = validateCreateProductPayload(_req.body);
+    if (!parsed.ok) {
+      return sendError(res, 400, parsed.error, parsed.field);
+    }
+
+    const payload = parsed.value;
+
+    if (payload.category_id !== null) {
+      const category = db.prepare("SELECT id FROM categories WHERE id = ?").get(payload.category_id);
+      if (!category) {
+        return sendError(res, 400, "Category not found", "category_id");
+      }
+    }
+
+    const createProductTransac = db.transaction(() => {
+      const productResult = db.prepare(
+        `INSERT INTO products (name, description, category_id, status) VALUES (?, ?, ?, ?)`
+      ).run(
+        payload.name,
+        payload.description,
+        payload.category_id,
+        payload.status
+      );
+
+      const productId = Number(productResult.lastInsertRowid);
+
+      const insertVariant = db.prepare(
+        `INSERT INTO variants (product_id, sku, name, price_cents, inventory_count) VALUES (?, ?, ?, ?, ?)`
+      );
+
+      for (const variant of payload.variants) {
+        insertVariant.run(
+          productId,
+          variant.sku,
+          variant.name,
+          variant.price_cents,
+          variant.inventory_count
+        );
+      }
+
+      const createdProduct = db.prepare(
+        `SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.id = ?`
+      ).get(productId) as Record<string, unknown>;
+
+      const createVariants = db.prepare(
+        `SELECT * FROM variants WHERE product_id = ? ORDER BY created_at ASC`
+      ).all(productId);
+
+      return { ...createdProduct, variants: createVariants };
+    });
+
+    const created = createProductTransac();
+    res.status(201).json(created);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.includes("UNIQUE constraint failed: variants.sku")) {
+      return sendError(res, 400, "Variant SKU must be unique", "variants");
+    }
+    return sendError(res, 500, message);
+  }
 });
 
 /**
@@ -133,7 +190,7 @@ router.put("/:id", (req, res) => {
       .get(id) as Record<string, unknown> | undefined;
 
     if (!existing) {
-      return res.status(404).json({ error: "Product not found" });
+      return sendError(res, 404, "Product not found");
     }
 
     db.prepare(
@@ -158,7 +215,7 @@ router.put("/:id", (req, res) => {
     res.json(updated);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).send(message);
+    return sendError(res, 500, message);
   }
 });
 
@@ -174,8 +231,7 @@ router.delete("/:id", (req, res) => {
     .get(id) as Record<string, unknown> | undefined;
 
   if (!product) {
-    // FIXME: Returns plain text — not JSON like other error responses
-    return res.status(404).send("Product not found");
+    return sendError(res, 404, "Product not found");
   }
 
   db.prepare(
