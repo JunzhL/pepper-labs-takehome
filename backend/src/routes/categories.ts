@@ -1,5 +1,6 @@
 import { Router } from "express";
 import db from "../db.js";
+import { sendError } from "../lib/http.js";
 
 const router = Router();
 
@@ -22,7 +23,7 @@ router.get("/", (_req, res) => {
     res.json(categories);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: message });
+    return sendError(res, 500, message);
   }
 });
 
@@ -37,13 +38,13 @@ router.get("/:id", (req, res) => {
       .get(Number(req.params.id));
 
     if (!category) {
-      return res.status(404).json({ error: "Category not found" });
+      return sendError(res, 404, "Category not found");
     }
 
     res.json(category);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: message });
+    return sendError(res, 500, message);
   }
 });
 

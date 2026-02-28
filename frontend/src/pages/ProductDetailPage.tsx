@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { ArrowLeft, Pencil, Trash2, Package } from "lucide-react";
-import { fetchProduct, deleteProduct } from "@/lib/api";
+import { fetchProduct, deleteProduct, updateVariant } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/apiError";
 import type { ProductDetail, Variant } from "@/types";
 import { formatPrice, cn } from "@/lib/utils";
+import VariantEditableRow from "@/components/variants/VariantEditableRow";
 
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [product, setProduct] = useState<ProductDetail | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -22,11 +26,51 @@ export default function ProductDetailPage() {
   // FIXME: The button does not disable while the request is in flight,
   //        so rapid clicks can send multiple DELETE requests.
   const handleDelete = async () => {
-    if (!id) return;
+    if (!id || isDeleting) return;
     if (!window.confirm("Are you sure you want to delete this product?"))
       return;
-    await deleteProduct(Number(id));
-    navigate("/products");
+
+    setDeleteError(null);
+    setIsDeleting(true);
+
+    try {
+      const response = await deleteProduct(Number(id));
+      if (!response.ok) {
+        throw new Error(
+          await getApiErrorMessage(response, "Failed to delete product")
+        );
+      }
+      navigate("/products");
+    } catch (error: unknown) {
+      setDeleteError(
+        error instanceof Error ? error.message : "Failed to delete product"
+      );
+      setIsDeleting(false);
+    }
+  };
+
+  const handleVariantSave = async (
+    variantId: number,
+    patch: { price_cents: number; inventory_count: number }
+  ) => {
+    const response = await updateVariant(variantId, patch);
+    if (!response.ok) {
+      throw new Error(
+        await getApiErrorMessage(response, "Failed to update variant")
+      );
+    }
+
+    const updated = (await response.json()) as Variant;
+
+    setProduct((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        variants: prev.variants.map((variant) =>
+          variant.id === updated.id ? updated : variant
+        ),
+      };
+    });
   };
 
   if (!product) {
@@ -83,12 +127,16 @@ export default function ProductDetailPage() {
 
           <button
             onClick={handleDelete}
-            className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10"
+            disabled={isDeleting}
+            className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Trash2 className="h-4 w-4" />
-            Delete
+            {isDeleting ? "Deleting..." : "Delete"}
           </button>
         </div>
+        {deleteError && (
+          <p className="mt-3 text-sm text-destructive">{deleteError}</p>
+        )}
       </div>
 
       {/* Variants table — card wrapped like CatalogList */}
@@ -120,8 +168,12 @@ export default function ProductDetailPage() {
                 </tr>
               </thead>
               <tbody className="[&_tr:last-child]:border-0">
-                {product.variants.map((v) => (
-                  <VariantRow key={v.id} variant={v} />
+                {product.variants.map((variant) => (
+                  <VariantEditableRow
+                    key={variant.id}
+                    variant={variant}
+                    onSave={handleVariantSave}
+                  />
                 ))}
               </tbody>
             </table>
@@ -129,50 +181,5 @@ export default function ProductDetailPage() {
         </div>
       </section>
     </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-
-function VariantRow({ variant }: { variant: Variant }) {
-  const lowStock =
-    variant.inventory_count > 0 && variant.inventory_count <= 10;
-  const outOfStock = variant.inventory_count === 0;
-
-  return (
-    <tr className="border-b transition-colors hover:bg-muted/50">
-      <td className="p-4 align-middle font-mono text-xs">
-        {variant.sku}
-      </td>
-      <td className="p-4 align-middle font-medium">{variant.name}</td>
-      <td className="p-4 text-right align-middle tabular-nums">
-        {formatPrice(variant.price_cents)}
-      </td>
-      <td className="p-4 text-right align-middle tabular-nums">
-        <span
-          className={cn(
-            outOfStock && "text-destructive",
-            lowStock && "text-amber-600"
-          )}
-        >
-          {variant.inventory_count}
-          {outOfStock && (
-            <Package className="ml-1 inline h-3.5 w-3.5 text-destructive/60" />
-          )}
-        </span>
-      </td>
-      <td className="p-4 text-right align-middle">
-        <button
-          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          onClick={() => {
-            // TODO: Open variant edit form / dialog
-            alert("Variant editing is not yet implemented.");
-          }}
-        >
-          <Pencil className="h-3 w-3" />
-          Edit
-        </button>
-      </td>
-    </tr>
   );
 }
